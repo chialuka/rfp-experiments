@@ -1,13 +1,9 @@
 # Core dependencies
-langchain-anthropic==0.3.7
-langgraph==0.2.71
-langchain-core==0.3.35
+langchain-anthropic
+langchain-core
+langgraph
 python-dotenv==1.0.0
-reducto==1.0.3
+reductoai==0.1.0
 
-# PDF processing
-Pillow==11.1.0  # Required for workflow visualization
-
-# Development dependencies
-black==24.2.0  # Code formatting
-mypy==1.8.0    # Type checking
+# Visualization dependencies
+IPython==8.23.0  # Required for workflow visualization
