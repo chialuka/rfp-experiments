@@ -297,7 +297,7 @@ def main():
 
     # Save the final table
     if result["final_table"]:
-        output_file = "requirements.txt"
+        output_file = "RFP_requirements.txt"
         with open(output_file, "w") as f:
             f.write(result["final_table"])
         print(f"\n✅ Analysis complete! Results saved to {output_file}")
