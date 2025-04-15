@@ -170,35 +170,41 @@ def execute_stage(stage_index: int):
     return _execute_stage
 
 
+def create_workflow_graph() -> StateGraph:
+    """Create and configure the RFP analysis workflow graph."""
+    # Create the graph
+    graph = StateGraph(RFPState)
+
+    # Add nodes for initialization and PDF processing
+    graph.add_node("initialize", initialize)
+    graph.add_node("process_pdf", process_pdf)
+
+    # Add nodes for each analysis stage
+    for i in range(len(RFP_ANALYSIS_STAGES)):
+        graph.add_node(f"stage_{i}", execute_stage(i))
+
+    # Set entry point
+    graph.set_entry_point("initialize")
+
+    # Add edges for initialization and PDF processing
+    graph.add_edge("initialize", "process_pdf")
+    graph.add_edge("process_pdf", "stage_0")
+
+    # Add edges between stages
+    for i in range(len(RFP_ANALYSIS_STAGES) - 1):
+        graph.add_edge(f"stage_{i}", f"stage_{i + 1}")
+
+    # Add edge from last stage to END
+    graph.add_edge(f"stage_{len(RFP_ANALYSIS_STAGES) - 1}", END)
+
+    return graph
+
+
 def visualize(output_path: str = "rfp_workflow.png") -> bool:
     """Generate and save a visualization of the RFP analysis workflow."""
     try:
-        # Create the graph
-        graph = StateGraph(RFPState)
-
-        # Add nodes for initialization and PDF processing
-        graph.add_node("initialize", initialize)
-        graph.add_node("process_pdf", process_pdf)
-
-        # Add nodes for each analysis stage
-        for i in range(len(RFP_ANALYSIS_STAGES)):
-            graph.add_node(f"stage_{i}", execute_stage(i))
-
-        # Set entry point
-        graph.set_entry_point("initialize")
-
-        # Add edges for initialization and PDF processing
-        graph.add_edge("initialize", "process_pdf")
-        graph.add_edge("process_pdf", "stage_0")
-
-        # Add edges between stages
-        for i in range(len(RFP_ANALYSIS_STAGES) - 1):
-            graph.add_edge(f"stage_{i}", f"stage_{i + 1}")
-
-        # Add edge from last stage to END
-        graph.add_edge(f"stage_{len(RFP_ANALYSIS_STAGES) - 1}", END)
-
-        # Compile the graph
+        # Create and compile the graph
+        graph = create_workflow_graph()
         app = graph.compile()
 
         # Generate and save the visualization
@@ -236,6 +242,47 @@ def get_pdfs_from_storage() -> Optional[Dict]:
     return parse_pdf(selected_pdf)
 
 
+def run_workflow(initial_state: Dict) -> Dict:
+    """
+    Run the RFP analysis workflow with the given initial state.
+    
+    Args:
+        initial_state: The initial state for the workflow
+        
+    Returns:
+        Dict containing the workflow results
+    """
+    # Create and compile the graph
+    graph = create_workflow_graph()
+    app = graph.compile(checkpointer=memory)
+
+    # Run the workflow with thread_id
+    result = app.invoke(initial_state, {"configurable": {"thread_id": "1"}})
+
+    # Save the final table
+    if result["final_table"]:
+        output_file = "RFP_requirements.txt"
+        with open(output_file, "w") as f:
+            f.write(result["final_table"])
+        print(f"\n✅ Analysis complete! Results saved to {output_file}")
+    else:
+        print("\n❌ Analysis failed to complete successfully.")
+
+    # Save debug log with all stage outputs
+    debug_log_file = "debug_stage_outputs.txt"
+    with open(debug_log_file, "w") as f:
+        f.write("RFP Analysis Debug Log\n")
+        f.write("=" * 80 + "\n\n")
+        for stage_name, output in result["stage_outputs"].items():
+            f.write(f"Stage: {stage_name}\n")
+            f.write("-" * 80 + "\n")
+            f.write(output)
+            f.write("\n\n" + "=" * 80 + "\n\n")
+    print(f"📝 Debug log saved to {debug_log_file}")
+
+    return result
+
+
 def main():
     """Run the RFP analysis workflow"""
     # Generate workflow visualization
@@ -264,57 +311,8 @@ def main():
         "stage_outputs": {},
     }
 
-    # Create the graph
-    graph = StateGraph(RFPState)
-
-    # Add nodes for initialization and PDF processing
-    graph.add_node("initialize", initialize)
-    graph.add_node("process_pdf", process_pdf)
-
-    # Add nodes for each analysis stage
-    for i in range(len(RFP_ANALYSIS_STAGES)):
-        graph.add_node(f"stage_{i}", execute_stage(i))
-
-    # Set entry point
-    graph.set_entry_point("initialize")
-
-    # Add edges for initialization and PDF processing
-    graph.add_edge("initialize", "process_pdf")
-    graph.add_edge("process_pdf", "stage_0")
-
-    # Add edges between stages
-    for i in range(len(RFP_ANALYSIS_STAGES) - 1):
-        graph.add_edge(f"stage_{i}", f"stage_{i + 1}")
-
-    # Add edge from last stage to END
-    graph.add_edge(f"stage_{len(RFP_ANALYSIS_STAGES) - 1}", END)
-
-    # Compile the graph with proper checkpointer configuration
-    app = graph.compile(checkpointer=memory)
-
-    # Run the workflow with thread_id
-    result = app.invoke(initial_state, {"configurable": {"thread_id": "1"}})
-
-    # Save the final table
-    if result["final_table"]:
-        output_file = "RFP_requirements.txt"
-        with open(output_file, "w") as f:
-            f.write(result["final_table"])
-        print(f"\n✅ Analysis complete! Results saved to {output_file}")
-    else:
-        print("\n❌ Analysis failed to complete successfully.")
-
-    # Save debug log with all stage outputs
-    debug_log_file = "debug_stage_outputs.txt"
-    with open(debug_log_file, "w") as f:
-        f.write("RFP Analysis Debug Log\n")
-        f.write("=" * 80 + "\n\n")
-        for stage_name, output in result["stage_outputs"].items():
-            f.write(f"Stage: {stage_name}\n")
-            f.write("-" * 80 + "\n")
-            f.write(output)
-            f.write("\n\n" + "=" * 80 + "\n\n")
-    print(f"📝 Debug log saved to {debug_log_file}")
+    # Run the workflow
+    run_workflow(initial_state)
 
 
 if __name__ == "__main__":
