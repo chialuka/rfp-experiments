@@ -24,7 +24,7 @@ class RFPState(Dict):
     """State for RFP analysis workflow"""
 
     pdf_filename: str
-    pdf_data: Optional[Dict]
+    pdf_data: str
     current_stage: int
     previous_output: Optional[str]
     final_table: Optional[str]
@@ -62,11 +62,11 @@ def initialize(state: Dict) -> RFPState:
     print(f"\n🚀 Initializing RFP analysis workflow...")
 
     # Get the pdf_filename from input or use a default
-    pdf_filename = state.get("pdf_filename", "merged_documents")
+    pdf_content = state.get("pdf_data", "")
 
     return {
-        "pdf_filename": pdf_filename,
-        "pdf_data": None,
+        "pdf_filename": None,
+        "pdf_data": pdf_content,
         "current_stage": 0,
         "previous_output": None,
         "final_table": None,
@@ -108,12 +108,8 @@ def execute_stage(stage_index: int):
         print(f"\n📋 Stage {stage_index + 1}: {stage_name}")
 
         # Check if pdf_data is valid for the first stage
-        if stage_index == 0 and (state["pdf_data"] is None or "error" in state["pdf_data"]):
-            error_msg = (
-                "No valid PDF data available"
-                if state["pdf_data"] is None
-                else state["pdf_data"]["error"]
-            )
+        if stage_index == 0 and state["pdf_data"] is None:
+            error_msg = "No PDF data available"
             print(f"❌ Error: {error_msg}")
             return state
 
@@ -128,7 +124,7 @@ def execute_stage(stage_index: int):
                 {
                     "role": "user",
                     "content": stage["message_template"].format(
-                        pdf_data=state["pdf_data"]["document_text"]
+                        pdf_data=state["pdf_data"]
                     ),
                 }
             )
@@ -177,7 +173,7 @@ def create_workflow_graph() -> StateGraph:
 
     # Add nodes for initialization and PDF processing
     graph.add_node("initialize", initialize)
-    graph.add_node("process_pdf", process_pdf)
+    # graph.add_node("process_pdf", process_pdf)
 
     # Add nodes for each analysis stage
     for i in range(len(RFP_ANALYSIS_STAGES)):
@@ -187,8 +183,8 @@ def create_workflow_graph() -> StateGraph:
     graph.set_entry_point("initialize")
 
     # Add edges for initialization and PDF processing
-    graph.add_edge("initialize", "process_pdf")
-    graph.add_edge("process_pdf", "stage_0")
+    graph.add_edge("initialize", "stage_0")
+    # graph.add_edge("process_pdf", "stage_0")
 
     # Add edges between stages
     for i in range(len(RFP_ANALYSIS_STAGES) - 1):
@@ -260,25 +256,25 @@ def run_workflow(initial_state: Dict) -> Dict:
     result = app.invoke(initial_state, {"configurable": {"thread_id": "1"}})
 
     # Save the final table
-    if result["final_table"]:
-        output_file = "RFP_requirements.txt"
-        with open(output_file, "w") as f:
-            f.write(result["final_table"])
-        print(f"\n✅ Analysis complete! Results saved to {output_file}")
-    else:
-        print("\n❌ Analysis failed to complete successfully.")
+    # if result["final_table"]:
+    #     output_file = "RFP_requirements.txt"
+    #     with open(output_file, "w") as f:
+    #         f.write(result["final_table"])
+    #     print(f"\n✅ Analysis complete! Results saved to {output_file}")
+    # else:
+    #     print("\n❌ Analysis failed to complete successfully.")
 
     # Save debug log with all stage outputs
-    debug_log_file = "debug_stage_outputs.txt"
-    with open(debug_log_file, "w") as f:
-        f.write("RFP Analysis Debug Log\n")
-        f.write("=" * 80 + "\n\n")
-        for stage_name, output in result["stage_outputs"].items():
-            f.write(f"Stage: {stage_name}\n")
-            f.write("-" * 80 + "\n")
-            f.write(output)
-            f.write("\n\n" + "=" * 80 + "\n\n")
-    print(f"📝 Debug log saved to {debug_log_file}")
+    # debug_log_file = "debug_stage_outputs.txt"
+    # with open(debug_log_file, "w") as f:
+    #     f.write("RFP Analysis Debug Log\n")
+    #     f.write("=" * 80 + "\n\n")
+    #     for stage_name, output in result["stage_outputs"].items():
+    #         f.write(f"Stage: {stage_name}\n")
+    #         f.write("-" * 80 + "\n")
+    #         f.write(output)
+    #         f.write("\n\n" + "=" * 80 + "\n\n")
+    # print(f"📝 Debug log saved to {debug_log_file}")
 
     return result
 
@@ -298,12 +294,12 @@ def main():
         print(f"\n❌ Error: {pdf_data['error']}")
         return
 
-    print(f"\n✅ Successfully processed PDF: {pdf_data['document_filename']}")
+    print(f"\n✅ Successfully processed PDF: {pdf_data}")
     print("🤖 Starting RFP analysis chain...")
 
     # Create initial state with all required fields
     initial_state = {
-        "pdf_filename": pdf_data["document_filename"],
+        "pdf_filename": pdf_data.slice(0, 30),
         "pdf_data": pdf_data,
         "current_stage": 0,
         "previous_output": None,

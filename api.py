@@ -1,4 +1,5 @@
 from fastapi import FastAPI, UploadFile, File, HTTPException
+from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
 from datetime import datetime
 from pathlib import Path
@@ -39,33 +40,38 @@ app.add_middleware(
 STORAGE_DIR = Path("file_storage")
 STORAGE_DIR.mkdir(exist_ok=True)
 
+class PdfContent(BaseModel):
+  pdf_file_content: str
+
 @app.post("/analyze")
-async def analyze_rfp(file: UploadFile = File(...)) -> Dict:
+async def analyze_rfp(request: PdfContent) -> Dict:
     """
     Analyze an RFP document.
     
     Args:
-        file: The PDF file to analyze
+        request: The request containing the PDF file content
         
     Returns:
         Dict containing the analysis results
     """
-    if not file.filename.endswith('.pdf'):
-        raise HTTPException(status_code=400, detail="Only PDF files are supported")
+    print(f"PDF content: {request.pdf_file_content[:30]}")
+    # if not file.filename.endswith('.pdf'):
+    #     raise HTTPException(status_code=400, detail="Only PDF files are supported")
     
-    # Save the uploaded file
-    file_path = STORAGE_DIR / file.filename
-    try:
-        with file_path.open("wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error saving file: {str(e)}")
+    # # Save the uploaded file
+    # file_path = STORAGE_DIR / file.filename
+    # try:
+    #     with file_path.open("wb") as buffer:
+    #         shutil.copyfileobj(file.file, buffer)
+    # except Exception as e:
+    #     raise HTTPException(status_code=500, detail=f"Error saving file: {str(e)}")
+    
     
     try:
         # Create initial state
         initial_state = {
-            "pdf_filename": str(file_path),
-            "pdf_data": None,
+            "pdf_filename": None,
+            "pdf_data": request.pdf_file_content,
             "current_stage": 0,
             "previous_output": None,
             "final_table": None,
@@ -76,10 +82,10 @@ async def analyze_rfp(file: UploadFile = File(...)) -> Dict:
         result = run_workflow(initial_state)
         
         # Clean up the uploaded file
-        try:
-            file_path.unlink()
-        except Exception as e:
-            logger.warning(f"Could not delete uploaded file: {str(e)}")
+        # try:
+        #     file_path.unlink()
+        # except Exception as e:
+        #     logger.warning(f"Could not delete uploaded file: {str(e)}")
         
         return {
             "status": "success",
@@ -88,10 +94,11 @@ async def analyze_rfp(file: UploadFile = File(...)) -> Dict:
         }
     except Exception as e:
         # Clean up the uploaded file in case of error
-        try:
-            file_path.unlink()
-        except Exception as cleanup_error:
-            logger.warning(f"Could not delete uploaded file: {str(cleanup_error)}")
+        # try:
+        #     file_path.unlink()
+        # except Exception as cleanup_error:
+        #     logger.warning(f"Could not delete uploaded file: {str(cleanup_error)}")
+        logger.error(f"Error analyzing RFP: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/health")
