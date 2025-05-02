@@ -8,9 +8,9 @@ from contextlib import asynccontextmanager
 import logging
 import shutil
 import uvicorn
-from main import (
-    run_workflow,
-)
+
+from main import run_workflow
+from modules.rfp_rag import retrieve_answer, create_vector_store
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +42,10 @@ STORAGE_DIR.mkdir(exist_ok=True)
 
 class PdfContent(BaseModel):
   pdf_file_content: str
+
+class RetrieveAnswer(BaseModel):
+  file_path: str
+  question: str
 
 @app.post("/analyze")
 async def analyze_rfp(request: PdfContent) -> Dict:
@@ -100,6 +104,24 @@ async def analyze_rfp(request: PdfContent) -> Dict:
         #     logger.warning(f"Could not delete uploaded file: {str(cleanup_error)}")
         logger.error(f"Error analyzing RFP: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/rfp/vectorize")
+async def vectorize(file_path: str) -> Dict:
+    """
+    Vectorize an RFP document.
+    """
+    print(f"PDF content: {file_path}")
+    content = await create_vector_store(file_path)
+    return {"status": "success", "content": content}
+
+@app.post("/rfp/question")
+async def answer(request: RetrieveAnswer) -> Dict:
+    """
+    Answer a question about an RFP document.
+    """
+    print(f"PDF content: {request.question}")
+    result = await retrieve_answer(request.file_path, request.question)
+    return {"status": "success", "result": result}
 
 @app.get("/health")
 async def health_check():
