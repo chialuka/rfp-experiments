@@ -1,4 +1,5 @@
 from fastapi import FastAPI, UploadFile, File, HTTPException
+from typing import List
 from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
 from datetime import datetime
@@ -10,15 +11,17 @@ import shutil
 import uvicorn
 
 from main import run_workflow
-from modules.rfp_rag import retrieve_answer, create_vector_store
+from modules.feasibility_rag import rfp_feasibility_analysis, create_vector_store
 
 logger = logging.getLogger(__name__)
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("Starting RFP Analysis API")
     yield
     logger.info("Shutting down RFP Analysis API")
+
 
 app = FastAPI(
     title="RFP Analysis API",
@@ -40,28 +43,30 @@ app.add_middleware(
 STORAGE_DIR = Path("file_storage")
 STORAGE_DIR.mkdir(exist_ok=True)
 
-class PdfContent(BaseModel):
-  pdf_file_content: str
 
-class RetrieveAnswer(BaseModel):
-  file_path: str
-  question: str
+class PdfContent(BaseModel):
+    pdf_file_content: str
+
+
+class FeasibilityRequest(BaseModel):
+    content: str
+
 
 @app.post("/analyze")
 async def analyze_rfp(request: PdfContent) -> Dict:
     """
     Analyze an RFP document.
-    
+
     Args:
         request: The request containing the PDF file content
-        
+
     Returns:
         Dict containing the analysis results
     """
     print(f"PDF content: {request.pdf_file_content[:30]}")
     # if not file.filename.endswith('.pdf'):
     #     raise HTTPException(status_code=400, detail="Only PDF files are supported")
-    
+
     # # Save the uploaded file
     # file_path = STORAGE_DIR / file.filename
     # try:
@@ -69,8 +74,7 @@ async def analyze_rfp(request: PdfContent) -> Dict:
     #         shutil.copyfileobj(file.file, buffer)
     # except Exception as e:
     #     raise HTTPException(status_code=500, detail=f"Error saving file: {str(e)}")
-    
-    
+
     try:
         # Create initial state
         initial_state = {
@@ -84,17 +88,17 @@ async def analyze_rfp(request: PdfContent) -> Dict:
 
         # Run the workflow
         result = run_workflow(initial_state)
-        
+
         # Clean up the uploaded file
         # try:
         #     file_path.unlink()
         # except Exception as e:
         #     logger.warning(f"Could not delete uploaded file: {str(e)}")
-        
+
         return {
             "status": "success",
             "results": result["stage_outputs"],
-            "final_table": result.get("final_table")
+            "final_table": result.get("final_table"),
         }
     except Exception as e:
         # Clean up the uploaded file in case of error
@@ -105,23 +109,26 @@ async def analyze_rfp(request: PdfContent) -> Dict:
         logger.error(f"Error analyzing RFP: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
+
 @app.post("/rfp/vectorize")
-async def vectorize(file_path: str) -> Dict:
+async def vectorize(file_path: List[str]) -> Dict:
     """
-    Vectorize an RFP document.
+    Vectorize a list of RFP documents.
     """
     print(f"PDF content: {file_path}")
     content = await create_vector_store(file_path)
     return {"status": "success", "content": content}
 
-@app.post("/rfp/question")
-async def answer(request: RetrieveAnswer) -> Dict:
+
+@app.post("/rfp/feasibility")
+async def check_feasibility(request: FeasibilityRequest) -> Dict:
     """
-    Answer a question about an RFP document.
+    Check the feasibility of an RFP document.
     """
-    print(f"PDF content: {request.question}")
-    result = await retrieve_answer(request.file_path, request.question)
+    print(f"PDF content: {request.content}")
+    result = await rfp_feasibility_analysis(request.content)
     return {"status": "success", "result": result}
+
 
 @app.get("/health")
 async def health_check():
@@ -130,6 +137,7 @@ async def health_check():
         "status": "healthy",
         "timestamp": datetime.now().isoformat(),
     }
+
 
 if __name__ == "__main__":
     uvicorn.run("api:app", host="0.0.0.0", port=2500, reload=True)
