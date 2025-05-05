@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import List, Optional, TypedDict
 
 # Third-party imports
-from langchain.chat_models import init_chat_model
+from langchain.chat_models import ChatOpenAI
 from langchain_core.documents import Document
 from langchain_core.vectorstores import VectorStore
 from langchain_openai import OpenAIEmbeddings
@@ -19,22 +19,15 @@ from langchain_community.vectorstores import Chroma
 from langgraph.graph import StateGraph, START, END
 from pydantic import BaseModel, Field
 
+# Local imports
+from prompts.feasibility import EXTRACT_REQUIREMENTS_PROMPT, ASSESS_FEASIBILITY_PROMPT
+
 # Constants
 CHAT_MODEL_NAME = "gpt-4o-mini"
 EMBEDDING_MODEL_NAME = "text-embedding-3-large"
 CHUNK_SIZE = 1200
 CHUNK_OVERLAP = 150
 
-# Prompt templates
-PROMPT_TEMPLATE = (
-    "You are a feasibility analyst deciding if the organisation can meet a requirement.\n"
-    "\n"
-    "<Requirement>\n{requirement}\n</Requirement>\n"
-    "\n"
-    "<Context>\n{context}\n</Context>\n"
-    "\n"
-    "Answer strictly as JSON with keys: feasible (Yes|No|Uncertain), reason, citations (array)."
-)
 
 # Data models
 class Requirement(BaseModel):
@@ -72,7 +65,11 @@ class RFPState(TypedDict):
 
 # Global instances
 embeddings = OpenAIEmbeddings(model=EMBEDDING_MODEL_NAME)
-chat_llm = init_chat_model(CHAT_MODEL_NAME, model_provider="openai")
+chat_llm = ChatOpenAI(
+    model=CHAT_MODEL_NAME,
+    temperature=0,  # Lower temperature for more deterministic outputs
+    response_format={"type": "json_object"}  # Force JSON responses
+)
 TEXT_SPLITTER = RecursiveCharacterTextSplitter(
     chunk_size=CHUNK_SIZE,
     chunk_overlap=CHUNK_OVERLAP,
@@ -97,7 +94,7 @@ async def create_vector_store(file_urls: List[str]) -> VectorStore:
     """Create or update a Chroma index with documents."""
     docs = await load_documents_from_urls(file_urls)
     chroma_dir = Path(".vectorstore/chroma")
-    
+
     if chroma_dir.exists():
         vs = Chroma(persist_directory=str(chroma_dir), embedding_function=embeddings)
         vs.add_documents(docs)
@@ -120,46 +117,19 @@ def load_vector_store() -> VectorStore:
 # Graph node functions - in order of workflow execution
 def extract_requirements(state: RFPState):
     """Extract requirements from the content using LLM."""
-    prompt = """
-    Extract vendor requirements from the following content. For each requirement, identify:
-    1. Page number (use "N/A" if not specified)
-    2. Section name
-    3. The exact requirement text
-    4. Obligation verb (shall, must, will, should, may, etc.)
-    5. Obligation level (Mandatory, Conditional, Recommended, Optional)
-    6. Any cross-references
-    7. Whether it needs human review
-
-    Format each requirement as a JSON object with these keys:
-    {
-        "page": "page number or N/A",
-        "section": "section name",
-        "requirement_text": "the full text of the requirement",
-        "obligation_verb": "the key verb",
-        "obligation_level": "Mandatory/Conditional/Recommended/Optional",
-        "cross_references": "any references or None",
-        "human_review_flag": "Yes - reason" or "No"
-    }
-
-    Return a JSON array of all requirements.
-    
-    CONTENT:
-    {content}
-    """
-    
-    llm_prompt = prompt.format(content=state["content"])
+    llm_prompt = EXTRACT_REQUIREMENTS_PROMPT.format(content=state["content"])
     response = chat_llm.invoke(llm_prompt)
-    
+
     try:
         # Extract the JSON array from the response
-        json_match = re.search(r'\[\s*\{.*\}\s*\]', response.content, re.DOTALL)
+        json_match = re.search(r"\[\s*\{.*\}\s*\]", response.content, re.DOTALL)
         if json_match:
             json_str = json_match.group(0)
             requirements_data = json.loads(json_str)
         else:
             # Try to parse the entire response as JSON
             requirements_data = json.loads(response.content)
-        
+
         requirements = []
         for req_data in requirements_data:
             requirement = Requirement(
@@ -169,10 +139,10 @@ def extract_requirements(state: RFPState):
                 Obligation_Verb=req_data.get("obligation_verb", ""),
                 Obligation_Level=req_data.get("obligation_level", ""),
                 Cross_References=req_data.get("cross_references", "None"),
-                Human_Review_Flag=req_data.get("human_review_flag", "No")
+                Human_Review_Flag=req_data.get("human_review_flag", "No"),
             )
             requirements.append(requirement)
-        
+
         return {"requirements": requirements}
     except Exception as e:
         print(f"Error parsing LLM response: {e}")
@@ -185,14 +155,11 @@ def process_requirement(state: RFPState):
     if not state["requirements"]:
         # No requirements to process
         return {"results": []}
-    
+
     current_req = state["requirements"][0]
     remaining = state["requirements"][1:] if len(state["requirements"]) > 1 else []
-    
-    return {
-        "requirement": current_req,
-        "requirements": remaining
-    }
+
+    return {"requirement": current_req, "requirements": remaining}
 
 
 def formulate_query(state: RFPState):
@@ -203,6 +170,7 @@ def formulate_query(state: RFPState):
 
 def make_retrieve_node(vector_store: VectorStore):
     """Factory function to create a retrieve node with access to vector store."""
+
     def retrieve(state: RFPState):
         """Retrieve relevant documents for the current query."""
         vs_retriever = vector_store.as_retriever(
@@ -223,7 +191,9 @@ def assess(state: RFPState):
     """Assess feasibility of meeting the requirement based on retrieved context."""
     req: Requirement = state["requirement"]
     ctx_text = "\n\n".join(doc.page_content for doc in state["context"])
-    prompt = PROMPT_TEMPLATE.format(requirement=req.requirement_text, context=ctx_text)
+    prompt = ASSESS_FEASIBILITY_PROMPT.format(
+        requirement=req.requirement_text, context=ctx_text
+    )
     response = chat_llm.invoke(prompt)
     verdict_json = json.loads(response.content)
     return {"verdict": verdict_json}
@@ -233,7 +203,7 @@ def collect_result(state: RFPState):
     """Collect the result for the current requirement."""
     current_results = state.get("results", [])
     current_verdict = state["verdict"]
-    
+
     result = {
         "req_no": len(current_results) + 1,
         "section": state["requirement"].section,
@@ -242,7 +212,7 @@ def collect_result(state: RFPState):
         "reason": current_verdict["reason"],
         "citations": "; ".join(current_verdict.get("citations", [])),
     }
-    
+
     return {"results": current_results + [result]}
 
 
@@ -258,17 +228,17 @@ def should_continue(state: RFPState):
 def build_graph(vector_store: VectorStore) -> StateGraph:
     """Build the complete graph for RFP analysis."""
     graph = StateGraph(RFPState)
-    
+
     # Extract requirements
     graph.add_node("extract", extract_requirements)
-    
+
     # Process requirements in a loop
     graph.add_node("process", process_requirement)
     graph.add_node("query", formulate_query)
     graph.add_node("retrieve", make_retrieve_node(vector_store))
     graph.add_node("assess", assess)
     graph.add_node("collect", collect_result)
-    
+
     # Add edges
     graph.add_edge(START, "extract")
     graph.add_edge("extract", "process")
@@ -276,26 +246,21 @@ def build_graph(vector_store: VectorStore) -> StateGraph:
     graph.add_edge("query", "retrieve")
     graph.add_edge("retrieve", "assess")
     graph.add_edge("assess", "collect")
-    
+
     # Create conditional branching
     graph.add_conditional_edges(
-        "collect",
-        should_continue,
-        {
-            "process_next": "process",
-            "end": END
-        }
+        "collect", should_continue, {"process_next": "process", "end": END}
     )
-    
+
     return graph.compile()
 
 
 async def rfp_feasibility_analysis(content: str) -> List[dict]:
     """Analyze RFP requirements against past RFPs.
-    
+
     Args:
         content: Text content containing requirements (any format)
-        
+
     Returns:
         List of verdict dictionaries for each requirement
     """
@@ -307,9 +272,8 @@ async def rfp_feasibility_analysis(content: str) -> List[dict]:
 
     # 2. Build and run RAG pipeline with integrated extraction
     rag_graph = build_graph(vector_store)
-    
+
     # 3. Run the workflow with content as input
     result = await rag_graph.invoke({"content": content})
-    
-    return result["results"]
 
+    return result["results"]
