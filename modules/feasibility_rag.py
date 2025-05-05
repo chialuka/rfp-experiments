@@ -6,18 +6,21 @@ import json
 import os
 import re
 from pathlib import Path
-from typing import List, Optional, TypedDict
+from typing import List, Optional, TypedDict, Dict, Any
 
 # Third-party imports
-from langchain.chat_models import ChatOpenAI
 from langchain_core.documents import Document
 from langchain_core.vectorstores import VectorStore
+from langchain_openai import ChatOpenAI
 from langchain_openai import OpenAIEmbeddings
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.document_loaders import PyPDFLoader
-from langchain_community.vectorstores import Chroma
 from langgraph.graph import StateGraph, START, END
 from pydantic import BaseModel, Field
+import chromadb
+
+
+chroma_client = chromadb.Client()
 
 # Local imports
 from prompts.feasibility import EXTRACT_REQUIREMENTS_PROMPT, ASSESS_FEASIBILITY_PROMPT
@@ -68,7 +71,7 @@ embeddings = OpenAIEmbeddings(model=EMBEDDING_MODEL_NAME)
 chat_llm = ChatOpenAI(
     model=CHAT_MODEL_NAME,
     temperature=0,  # Lower temperature for more deterministic outputs
-    response_format={"type": "json_object"}  # Force JSON responses
+    model_kwargs={"response_format": {"type": "json_object"}},  # Force JSON responses
 )
 TEXT_SPLITTER = RecursiveCharacterTextSplitter(
     chunk_size=CHUNK_SIZE,
@@ -83,27 +86,32 @@ async def load_documents_from_urls(urls: List[str]) -> List[Document]:
     for url in urls:
         print(f"Loading {url} …")
         loader = PyPDFLoader(url)
-        pages = await loader.alazy_load()
+        pages = await loader.aload()
         for page in pages:
             page.metadata.setdefault("rfp_source", url)
         docs.extend(TEXT_SPLITTER.split_documents(pages))
     return docs
 
 
-async def create_vector_store(file_urls: List[str]) -> VectorStore:
+async def create_vector_store(file_urls: List[str]) -> Dict[str, Any]:
     """Create or update a Chroma index with documents."""
     docs = await load_documents_from_urls(file_urls)
     chroma_dir = Path(".vectorstore/chroma")
 
     if chroma_dir.exists():
-        vs = Chroma(persist_directory=str(chroma_dir), embedding_function=embeddings)
+        vs = chroma_client(persist_directory=str(chroma_dir), embedding_function=embeddings)
         vs.add_documents(docs)
     else:
         chroma_dir.mkdir(parents=True, exist_ok=True)
-        vs = Chroma.from_documents(docs, embeddings, persist_directory=str(chroma_dir))
+        vs = chroma_client.from_documents(docs, embeddings, persist_directory=str(chroma_dir))
 
-    vs.persist()
-    return vs
+    # Return serializable result instead of the vectorstore object
+    return {
+        "status": "success",
+        "documents_processed": len(docs),
+        "vector_store_location": str(chroma_dir),
+        "document_sources": file_urls,
+    }
 
 
 def load_vector_store() -> VectorStore:
@@ -111,7 +119,7 @@ def load_vector_store() -> VectorStore:
     chroma_dir = Path(".vectorstore/chroma")
     if not chroma_dir.exists():
         raise ValueError("Vector store not found. Please build it first.")
-    return Chroma(persist_directory=str(chroma_dir), embedding_function=embeddings)
+    return chroma_client(persist_directory=str(chroma_dir), embedding_function=embeddings)
 
 
 # Graph node functions - in order of workflow execution

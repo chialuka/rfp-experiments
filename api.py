@@ -52,6 +52,10 @@ class FeasibilityRequest(BaseModel):
     content: str
 
 
+class VectorizeRequest(BaseModel):
+    file_path: List[str]
+
+
 @app.post("/analyze")
 async def analyze_rfp(request: PdfContent) -> Dict:
     """
@@ -111,13 +115,13 @@ async def analyze_rfp(request: PdfContent) -> Dict:
 
 
 @app.post("/rfp/vectorize")
-async def vectorize(file_path: List[str]) -> Dict:
+async def vectorize(request: VectorizeRequest) -> Dict:
     """
     Vectorize a list of RFP documents.
     """
-    print(f"PDF content: {file_path}")
-    content = await create_vector_store(file_path)
-    return {"status": "success", "content": content}
+    print(f"Processing file paths: {request.file_path}")
+    result = await create_vector_store(request.file_path)
+    return result
 
 
 @app.post("/rfp/feasibility")
