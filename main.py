@@ -8,7 +8,7 @@ import os
 from pathlib import Path
 from dotenv import load_dotenv
 from reducto import Reducto
-from prompts import RFP_ANALYSIS_STAGES
+from prompts.compliance_matrix import RFP_ANALYSIS_STAGES
 
 # Load environment variables
 load_dotenv()
