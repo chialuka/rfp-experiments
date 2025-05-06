@@ -1,4 +1,4 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import FastAPI, HTTPException
 from typing import List
 from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
@@ -7,11 +7,11 @@ from pathlib import Path
 from typing import Dict
 from contextlib import asynccontextmanager
 import logging
-import shutil
 import uvicorn
 
 from main import run_workflow
 from modules.feasibility_rag import rfp_feasibility_analysis, create_vector_store
+from db import supabase
 
 logger = logging.getLogger(__name__)
 
@@ -44,8 +44,9 @@ STORAGE_DIR = Path("file_storage")
 STORAGE_DIR.mkdir(exist_ok=True)
 
 
-class PdfContent(BaseModel):
+class ComplianceRequest(BaseModel):
     pdf_file_content: str
+    document_id: int
 
 
 class FeasibilityRequest(BaseModel):
@@ -57,7 +58,7 @@ class VectorizeRequest(BaseModel):
 
 
 @app.post("/analyze")
-async def analyze_rfp(request: PdfContent) -> Dict:
+async def analyze_rfp(request: ComplianceRequest) -> Dict:
     """
     Analyze an RFP document.
 
@@ -67,17 +68,7 @@ async def analyze_rfp(request: PdfContent) -> Dict:
     Returns:
         Dict containing the analysis results
     """
-    print(f"PDF content: {request.pdf_file_content[:30]}")
-    # if not file.filename.endswith('.pdf'):
-    #     raise HTTPException(status_code=400, detail="Only PDF files are supported")
-
-    # # Save the uploaded file
-    # file_path = STORAGE_DIR / file.filename
-    # try:
-    #     with file_path.open("wb") as buffer:
-    #         shutil.copyfileobj(file.file, buffer)
-    # except Exception as e:
-    #     raise HTTPException(status_code=500, detail=f"Error saving file: {str(e)}")
+    print(f"PDF content: {request.document_id}")
 
     try:
         # Create initial state
@@ -92,24 +83,17 @@ async def analyze_rfp(request: PdfContent) -> Dict:
 
         # Run the workflow
         result = run_workflow(initial_state)
+        final_table = result.get("final_table")
 
-        # Clean up the uploaded file
-        # try:
-        #     file_path.unlink()
-        # except Exception as e:
-        #     logger.warning(f"Could not delete uploaded file: {str(e)}")
-
+        # Update the database with the compliance matrix
+        supabase.table("documents").update({"complianceMatrix": final_table}).eq(
+            "id", request.document_id
+        ).execute()
+        
         return {
             "status": "success",
-            "results": result["stage_outputs"],
-            "final_table": result.get("final_table"),
         }
     except Exception as e:
-        # Clean up the uploaded file in case of error
-        # try:
-        #     file_path.unlink()
-        # except Exception as cleanup_error:
-        #     logger.warning(f"Could not delete uploaded file: {str(cleanup_error)}")
         logger.error(f"Error analyzing RFP: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
