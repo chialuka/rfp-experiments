@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 # Standard library imports
-import asyncio
 import json
 import os
 import re
@@ -18,10 +17,11 @@ from langchain_community.document_loaders import PyPDFLoader
 from langgraph.graph import StateGraph, START, END
 from pydantic import BaseModel, Field
 import chromadb
+import chromadb.utils.embedding_functions as embedding_functions
 
 
-chroma_client = chromadb.Client()
-
+# chroma_client = chromadb.Client()
+chroma_client = chromadb.PersistentClient(path=".vectorstore/chroma")
 # Local imports
 from prompts.feasibility import EXTRACT_REQUIREMENTS_PROMPT, ASSESS_FEASIBILITY_PROMPT
 
@@ -67,7 +67,9 @@ class RFPState(TypedDict):
 
 
 # Global instances
-embeddings = OpenAIEmbeddings(model=EMBEDDING_MODEL_NAME)
+openai_embed_fn = embedding_functions.OpenAIEmbeddingFunction(
+    api_key=os.environ.get("OPENAI_API_KEY"), model_name=EMBEDDING_MODEL_NAME
+)
 chat_llm = ChatOpenAI(
     model=CHAT_MODEL_NAME,
     temperature=0,  # Lower temperature for more deterministic outputs
@@ -95,20 +97,33 @@ async def load_documents_from_urls(urls: List[str]) -> List[Document]:
 
 async def create_vector_store(file_urls: List[str]) -> Dict[str, Any]:
     """Create or update a Chroma index with documents."""
-    docs = await load_documents_from_urls(file_urls)
+    documents = await load_documents_from_urls(file_urls)
     chroma_dir = Path(".vectorstore/chroma")
-
-    if chroma_dir.exists():
-        vs = chroma_client(persist_directory=str(chroma_dir), embedding_function=embeddings)
-        vs.add_documents(docs)
-    else:
-        chroma_dir.mkdir(parents=True, exist_ok=True)
-        vs = chroma_client.from_documents(docs, embeddings, persist_directory=str(chroma_dir))
+    chroma_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Create a collection if it doesn't exist and return an existing one if it does
+    collection = chroma_client.create_collection(
+        name="z-bids", embedding_function=openai_embed_fn, get_or_create=True
+    )
+    
+    # Extract text content from Document objects
+    doc_contents = [doc.page_content for doc in documents]
+    # Generate unique IDs as strings
+    doc_ids = [f"doc_{i}" for i in range(len(doc_contents))]
+    # Add metadata for each document
+    doc_metadata = [doc.metadata for doc in documents]
+    
+    # Add documents to the collection
+    collection.add(
+        ids=doc_ids,
+        documents=doc_contents,
+        metadatas=doc_metadata
+    )
 
     # Return serializable result instead of the vectorstore object
     return {
         "status": "success",
-        "documents_processed": len(docs),
+        "documents_processed": len(documents),
         "vector_store_location": str(chroma_dir),
         "document_sources": file_urls,
     }
@@ -116,10 +131,9 @@ async def create_vector_store(file_urls: List[str]) -> Dict[str, Any]:
 
 def load_vector_store() -> VectorStore:
     """Load the existing Chroma vector store."""
-    chroma_dir = Path(".vectorstore/chroma")
-    if not chroma_dir.exists():
-        raise ValueError("Vector store not found. Please build it first.")
-    return chroma_client(persist_directory=str(chroma_dir), embedding_function=embeddings)
+    return chroma_client.get_or_create_collection(
+        name="z-bids", embedding_function=openai_embed_fn
+    )
 
 
 # Graph node functions - in order of workflow execution
