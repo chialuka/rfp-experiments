@@ -22,7 +22,7 @@ import chromadb.utils.embedding_functions as embedding_functions
 
 # Local imports
 from prompts.feasibility import EXTRACT_REQUIREMENTS_PROMPT, ASSESS_FEASIBILITY_PROMPT
-
+from db import supabase
 
 # Initialize the ChromaDB client
 chroma_client = chromadb.PersistentClient(path=".vectorstore/chroma")
@@ -337,7 +337,7 @@ def build_graph() -> StateGraph:
     return graph.compile()
 
 
-async def rfp_feasibility_analysis(content: str) -> List[dict]:
+async def rfp_feasibility_analysis(content: str, document_id: int) -> List[dict]:
     """Analyze RFP requirements against past RFPs using streamed LangGraph approach.
 
     Args:
@@ -375,6 +375,7 @@ async def rfp_feasibility_analysis(content: str) -> List[dict]:
                 results = st["results"]
                         
         print(f"Analysis complete. Processed {len(results)} requirements")
+        
         return {"status": "success", "results": results}
 
     except Exception as e:

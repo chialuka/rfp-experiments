@@ -51,16 +51,17 @@ class ComplianceRequest(BaseModel):
 
 class FeasibilityRequest(BaseModel):
     content: str
+    document_id: int
 
 
 class VectorizeRequest(BaseModel):
     file_path: List[str]
 
 
-@app.post("/analyze")
+@app.post("/rfp/analyze")
 async def analyze_rfp(request: ComplianceRequest) -> Dict:
     """
-    Analyze an RFP document.
+    Analyze an RFP document. Generate a compliance matrix and feasibility checklist for the document.
 
     Args:
         request: The request containing the PDF file content
@@ -83,13 +84,20 @@ async def analyze_rfp(request: ComplianceRequest) -> Dict:
 
         # Run the workflow
         result = run_workflow(initial_state)
-        final_table = result.get("final_table")
+        compliance_matrix = result.get("final_table")
+
+        feasibility_result = await rfp_feasibility_analysis(
+            compliance_matrix, request.document_id
+        )
 
         # Update the database with the compliance matrix
-        supabase.table("documents").update({"complianceMatrix": final_table}).eq(
-            "id", request.document_id
-        ).execute()
-        
+        supabase.table("documents").update(
+            {
+                "complianceMatrix": compliance_matrix,
+                "feasibilityCheck": feasibility_result.get("results"),
+            }
+        ).eq("id", request.document_id).execute()
+
         return {
             "status": "success",
         }
@@ -113,7 +121,7 @@ async def check_feasibility(request: FeasibilityRequest) -> Dict:
     """
     Check the feasibility of an RFP document.
     """
-    result = await rfp_feasibility_analysis(request.content)
+    result = await rfp_feasibility_analysis(request.content, request.document_id)
     return {"status": "success", "result": result}
 
 
