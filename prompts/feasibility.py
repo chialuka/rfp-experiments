@@ -13,7 +13,7 @@ EXTRACT_REQUIREMENTS_PROMPT = """
     7. Whether it needs human review
 
     Format each requirement as a JSON object with these keys:
-    {
+    {{
         "page": "page number or N/A",
         "section": "section name",
         "requirement_text": "the full text of the requirement",
@@ -21,7 +21,7 @@ EXTRACT_REQUIREMENTS_PROMPT = """
         "obligation_level": "Mandatory/Conditional/Recommended/Optional",
         "cross_references": "any references or None",
         "human_review_flag": "Yes - reason" or "No"
-    }
+    }}
 
     Return a JSON array of all requirements.
     

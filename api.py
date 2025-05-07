@@ -113,7 +113,6 @@ async def check_feasibility(request: FeasibilityRequest) -> Dict:
     """
     Check the feasibility of an RFP document.
     """
-    print(f"PDF content: {request.content}")
     result = await rfp_feasibility_analysis(request.content)
     return {"status": "success", "result": result}
 

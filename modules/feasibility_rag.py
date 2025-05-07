@@ -6,24 +6,26 @@ import os
 import re
 from pathlib import Path
 from typing import List, Optional, TypedDict, Dict, Any
+from uuid import uuid4
 
 # Third-party imports
 from langchain_core.documents import Document
 from langchain_core.vectorstores import VectorStore
-from langchain_openai import ChatOpenAI
-from langchain_openai import OpenAIEmbeddings
+from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.document_loaders import PyPDFLoader
+from langchain_chroma import Chroma
 from langgraph.graph import StateGraph, START, END
 from pydantic import BaseModel, Field
 import chromadb
 import chromadb.utils.embedding_functions as embedding_functions
 
-
-# chroma_client = chromadb.Client()
-chroma_client = chromadb.PersistentClient(path=".vectorstore/chroma")
 # Local imports
 from prompts.feasibility import EXTRACT_REQUIREMENTS_PROMPT, ASSESS_FEASIBILITY_PROMPT
+
+
+# Initialize the ChromaDB client
+chroma_client = chromadb.PersistentClient(path=".vectorstore/chroma")
 
 # Constants
 CHAT_MODEL_NAME = "gpt-4o-mini"
@@ -36,9 +38,9 @@ CHUNK_OVERLAP = 150
 class Requirement(BaseModel):
     page: str = Field(..., alias="Page")
     section: str = Field(..., alias="Section")
-    requirement_text: str = Field(..., alias="Requirement Text")
-    obligation_verb: str = Field(..., alias="Obligation Verb")
-    obligation_level: str = Field(..., alias="Obligation Level")
+    requirement_text: Optional[str] = Field(None, alias="Requirement Text")
+    obligation_verb: Optional[str] = Field(None, alias="Obligation Verb")
+    obligation_level: Optional[str] = Field(None, alias="Obligation Level")
     cross_references: Optional[str] = Field(None, alias="Cross-References")
     human_review_flag: Optional[str] = Field(None, alias="Human Review Flag")
 
@@ -51,25 +53,23 @@ class Requirement(BaseModel):
         )
 
 
-class ComplianceMatrix(BaseModel):
-    rfp_id: str = "UNSET"
-    requirements: List[Requirement]
-
-
 class RFPState(TypedDict):
     content: str  # Raw RFP text
-    requirements: List[Requirement]  # Extracted requirements
-    requirement: Requirement  # Current requirement being processed
-    query: str
-    context: List[Document]
-    verdict: dict
+    requirements: List[Requirement]  # All extracted requirements
+    current_req_index: int  # Index of the current requirement being processed
     results: List[dict]  # Accumulated results
+    vector_store: Any  # Reference to vector store
 
 
 # Global instances
-openai_embed_fn = embedding_functions.OpenAIEmbeddingFunction(
+# For ChromaDB native operations
+chroma_embed_fn = embedding_functions.OpenAIEmbeddingFunction(
     api_key=os.environ.get("OPENAI_API_KEY"), model_name=EMBEDDING_MODEL_NAME
 )
+
+# For LangChain operations
+langchain_embeddings = OpenAIEmbeddings(model=EMBEDDING_MODEL_NAME)
+
 chat_llm = ChatOpenAI(
     model=CHAT_MODEL_NAME,
     temperature=0,  # Lower temperature for more deterministic outputs
@@ -100,27 +100,24 @@ async def create_vector_store(file_urls: List[str]) -> Dict[str, Any]:
     documents = await load_documents_from_urls(file_urls)
     chroma_dir = Path(".vectorstore/chroma")
     chroma_dir.mkdir(parents=True, exist_ok=True)
-    
+
     # Create a collection if it doesn't exist and return an existing one if it does
     collection = chroma_client.create_collection(
-        name="z-bids", embedding_function=openai_embed_fn, get_or_create=True
-    )
-    
-    # Extract text content from Document objects
-    doc_contents = [doc.page_content for doc in documents]
-    # Generate unique IDs as strings
-    doc_ids = [f"doc_{i}" for i in range(len(doc_contents))]
-    # Add metadata for each document
-    doc_metadata = [doc.metadata for doc in documents]
-    
-    # Add documents to the collection
-    collection.add(
-        ids=doc_ids,
-        documents=doc_contents,
-        metadatas=doc_metadata
+        name="z-bids", embedding_function=chroma_embed_fn, get_or_create=True
     )
 
-    # Return serializable result instead of the vectorstore object
+    # Create a LangChain Chroma wrapper for the collection
+    vector_store = Chroma(
+        client=chroma_client,
+        collection_name="z-bids",
+        embedding_function=langchain_embeddings,
+    )
+
+    # Add documents using LangChain interface
+    uuids = [str(uuid4()) for _ in range(len(documents))]
+    vector_store.add_documents(documents=documents, ids=uuids)
+
+    # Return serializable result instead of the vector store object
     return {
         "status": "success",
         "documents_processed": len(documents),
@@ -131,18 +128,25 @@ async def create_vector_store(file_urls: List[str]) -> Dict[str, Any]:
 
 def load_vector_store() -> VectorStore:
     """Load the existing Chroma vector store."""
-    return chroma_client.get_or_create_collection(
-        name="z-bids", embedding_function=openai_embed_fn
+    chroma_dir = Path(".vectorstore/chroma")
+    if not chroma_dir.exists():
+        raise ValueError("Vector store not found. Please build it first.")
+
+    # Create a LangChain Chroma instance that wraps the ChromaDB collection
+    return Chroma(
+        client=chroma_client,
+        collection_name="z-bids",
+        embedding_function=langchain_embeddings,
     )
 
 
-# Graph node functions - in order of workflow execution
-def extract_requirements(state: RFPState):
+# Graph node functions
+async def extract_requirements(state: RFPState):
     """Extract requirements from the content using LLM."""
-    llm_prompt = EXTRACT_REQUIREMENTS_PROMPT.format(content=state["content"])
-    response = chat_llm.invoke(llm_prompt)
-
     try:
+        llm_prompt = EXTRACT_REQUIREMENTS_PROMPT.format(content=state["content"])
+        response = await chat_llm.ainvoke(llm_prompt)
+
         # Extract the JSON array from the response
         json_match = re.search(r"\[\s*\{.*\}\s*\]", response.content, re.DOTALL)
         if json_match:
@@ -150,135 +154,191 @@ def extract_requirements(state: RFPState):
             requirements_data = json.loads(json_str)
         else:
             # Try to parse the entire response as JSON
-            requirements_data = json.loads(response.content)
+            response_json = json.loads(response.content)
+            # Check if the response has a "requirements" key
+            if "requirements" in response_json:
+                requirements_data = response_json["requirements"]
+            else:
+                requirements_data = response_json
+
+        print(f"Extracted {len(requirements_data)} requirements")
 
         requirements = []
         for req_data in requirements_data:
-            requirement = Requirement(
-                Page=req_data.get("page", "N/A"),
-                Section=req_data.get("section", "Unknown"),
-                Requirement_Text=req_data.get("requirement_text", ""),
-                Obligation_Verb=req_data.get("obligation_verb", ""),
-                Obligation_Level=req_data.get("obligation_level", ""),
-                Cross_References=req_data.get("cross_references", "None"),
-                Human_Review_Flag=req_data.get("human_review_flag", "No"),
-            )
-            requirements.append(requirement)
+            try:
+                requirement = Requirement(
+                    Page=req_data.get("page", "N/A"),
+                    Section=req_data.get("section", "Unknown"),
+                    **{
+                        "Requirement Text": req_data.get("requirement_text", ""),
+                        "Obligation Verb": req_data.get("obligation_verb", ""),
+                        "Obligation Level": req_data.get("obligation_level", ""),
+                        "Cross-References": req_data.get("cross_references", "None"),
+                        "Human Review Flag": req_data.get("human_review_flag", "No"),
+                    },
+                )
+                requirements.append(requirement)
+            except Exception as req_error:
+                print(f"Error parsing requirement: {req_error}")
+                continue
 
-        return {"requirements": requirements}
+        print(f"Found {len(requirements)} valid requirements")
+
+        return {
+            "requirements": requirements,
+            "current_req_index": 0 if requirements else -1,
+            "results": [],
+        }
     except Exception as e:
         print(f"Error parsing LLM response: {e}")
-        print(f"LLM response: {response.content}")
-        return {"requirements": []}
+        return {"requirements": [], "current_req_index": -1, "results": []}
 
 
-def process_requirement(state: RFPState):
-    """Process the next requirement or end if all are processed."""
-    if not state["requirements"]:
-        # No requirements to process
-        return {"results": []}
+async def process_requirement(state: RFPState):
+    """Process a single requirement."""
+    try:
+        # Get the current requirement
+        requirements = state["requirements"]
+        current_index = state.get("current_req_index", -1)
 
-    current_req = state["requirements"][0]
-    remaining = state["requirements"][1:] if len(state["requirements"]) > 1 else []
+        # Check if we have valid index
+        if current_index < 0 or current_index >= len(requirements):
+            print("No more requirements to process")
+            return {"current_req_index": -1}
 
-    return {"requirement": current_req, "requirements": remaining}
-
-
-def formulate_query(state: RFPState):
-    """Create a query from the current requirement."""
-    req: Requirement = state["requirement"]
-    return {"query": req.to_query()}
-
-
-def make_retrieve_node(vector_store: VectorStore):
-    """Factory function to create a retrieve node with access to vector store."""
-
-    def retrieve(state: RFPState):
-        """Retrieve relevant documents for the current query."""
-        vs_retriever = vector_store.as_retriever(
-            search_kwargs={
-                "k": 8,
-                "filter": {
-                    "obligation_level": state["requirement"].obligation_level.lower()
-                },
-            }
+        req = requirements[current_index]
+        print(
+            f"Processing requirement {current_index+1}/{len(requirements)}: {req.requirement_text[:50]}..."
         )
-        ctx_docs = vs_retriever.invoke(state["query"])
-        return {"context": ctx_docs}
 
-    return retrieve
+        # Get the vector store from state
+        vector_store = state.get("vector_store")
+        if not vector_store:
+            print("Vector store not found in state")
+            return {"current_req_index": -1}
 
+        # Create query
+        query = req.to_query()
 
-def assess(state: RFPState):
-    """Assess feasibility of meeting the requirement based on retrieved context."""
-    req: Requirement = state["requirement"]
-    ctx_text = "\n\n".join(doc.page_content for doc in state["context"])
-    prompt = ASSESS_FEASIBILITY_PROMPT.format(
-        requirement=req.requirement_text, context=ctx_text
-    )
-    response = chat_llm.invoke(prompt)
-    verdict_json = json.loads(response.content)
-    return {"verdict": verdict_json}
+        # Retrieve relevant documents
+        try:
+            retriever = vector_store.as_retriever(search_kwargs={"k": 8})
+            documents = retriever.invoke(query)
+            print(f"Retrieved {len(documents)} documents")
+        except Exception as e:
+            print(f"Error during retrieval: {str(e)}")
+            documents = []
 
+        # Assess feasibility
+        try:
+            verdict = await assess_requirement(req, documents)
+            print(f"Assessment: {verdict.get('feasible', 'Unknown')}")
+        except Exception as e:
+            print(f"Error during assessment: {str(e)}")
+            verdict = {
+                "feasible": "Uncertain",
+                "reason": f"Error during assessment: {str(e)}",
+                "citations": [],
+            }
 
-def collect_result(state: RFPState):
-    """Collect the result for the current requirement."""
-    current_results = state.get("results", [])
-    current_verdict = state["verdict"]
+        # Collect result
+        result = {
+            "req_no": current_index + 1,
+            "section": req.section,
+            "requirement": req.requirement_text,
+            "feasible": verdict.get("feasible", "Uncertain"),
+            "reason": verdict.get("reason", "No assessment available"),
+            "citations": "; ".join(verdict.get("citations", [])),
+        }
 
-    result = {
-        "req_no": len(current_results) + 1,
-        "section": state["requirement"].section,
-        "requirement": state["requirement"].requirement_text,
-        "feasible": current_verdict["feasible"],
-        "reason": current_verdict["reason"],
-        "citations": "; ".join(current_verdict.get("citations", [])),
-    }
-
-    return {"results": current_results + [result]}
+        # Add to results and move to next requirement
+        return {
+            "results": state.get("results", []) + [result],
+            "current_req_index": (
+                current_index + 1 if current_index + 1 < len(requirements) else -1
+            ),
+        }
+    except Exception as e:
+        print(f"Error processing requirement: {e}")
+        return {
+            "current_req_index": state.get("current_req_index", -1) + 1,
+            "results": state.get("results", []),
+        }
 
 
 def should_continue(state: RFPState):
     """Decide whether to process another requirement or finish."""
-    if state["requirements"]:
-        return "process_next"
+    current_index = state.get("current_req_index", -1)
+
+    if current_index >= 0:
+        print(f"Continue processing next requirement ({current_index + 1})")
+        return "continue"
     else:
+        print("No more requirements to process, ending")
         return "end"
 
 
+# Function to assess a single requirement
+async def assess_requirement(
+    requirement: Requirement, documents: List[Document]
+) -> Dict:
+    """Assess feasibility of a requirement based on retrieved documents."""
+    try:
+        ctx_text = (
+            "\n\n".join(doc.page_content for doc in documents) if documents else ""
+        )
+
+        # If no context was retrieved, note that in the verdict
+        if not ctx_text:
+            return {
+                "feasible": "Uncertain",
+                "reason": "No relevant context was found to assess this requirement.",
+                "citations": [],
+            }
+
+        prompt = ASSESS_FEASIBILITY_PROMPT.format(
+            requirement=requirement.requirement_text, context=ctx_text
+        )
+        response = await chat_llm.ainvoke(prompt)
+        verdict_json = json.loads(response.content)
+        return verdict_json
+    except Exception as e:
+        print(f"Error during assessment: {e}")
+        return {
+            "feasible": "Uncertain",
+            "reason": f"Error during assessment: {str(e)}",
+            "citations": [],
+        }
+
+
 # Graph builder and main function
-def build_graph(vector_store: VectorStore) -> StateGraph:
-    """Build the complete graph for RFP analysis."""
+def build_graph() -> StateGraph:
+    """Build the processing graph for RFP analysis."""
     graph = StateGraph(RFPState)
 
-    # Extract requirements
+    # Add nodes
     graph.add_node("extract", extract_requirements)
-
-    # Process requirements in a loop
     graph.add_node("process", process_requirement)
-    graph.add_node("query", formulate_query)
-    graph.add_node("retrieve", make_retrieve_node(vector_store))
-    graph.add_node("assess", assess)
-    graph.add_node("collect", collect_result)
 
     # Add edges
     graph.add_edge(START, "extract")
     graph.add_edge("extract", "process")
-    graph.add_edge("process", "query")
-    graph.add_edge("query", "retrieve")
-    graph.add_edge("retrieve", "assess")
-    graph.add_edge("assess", "collect")
 
-    # Create conditional branching
+    # Add conditional edge for continued processing
     graph.add_conditional_edges(
-        "collect", should_continue, {"process_next": "process", "end": END}
+        "process",
+        should_continue,
+        {
+            "continue": "process",  # Loop back to process next requirement
+            "end": END,
+        },
     )
 
     return graph.compile()
 
 
 async def rfp_feasibility_analysis(content: str) -> List[dict]:
-    """Analyze RFP requirements against past RFPs.
+    """Analyze RFP requirements against past RFPs using streamed LangGraph approach.
 
     Args:
         content: Text content containing requirements (any format)
@@ -286,16 +346,39 @@ async def rfp_feasibility_analysis(content: str) -> List[dict]:
     Returns:
         List of verdict dictionaries for each requirement
     """
-    if not os.environ.get("OPENAI_API_KEY"):
-        raise EnvironmentError("Set the OPENAI_API_KEY environment variable")
+    try:
+        if not os.environ.get("OPENAI_API_KEY"):
+            raise EnvironmentError("Set the OPENAI_API_KEY environment variable")
 
-    # 1. Load vector store
-    vector_store = load_vector_store()
+        print("Starting RFP feasibility analysis...")
 
-    # 2. Build and run RAG pipeline with integrated extraction
-    rag_graph = build_graph(vector_store)
+        # Load vector store
+        vector_store = load_vector_store()
+        print("Vector store loaded successfully")
 
-    # 3. Run the workflow with content as input
-    result = await rag_graph.invoke({"content": content})
+        # Build the graph
+        workflow = build_graph()
+        print("Graph built successfully")
 
-    return result["results"]
+        # Initialize state with vector store
+        initial_state = {
+            "content": content,
+            "vector_store": vector_store,  # Pass vector store in initial state
+        }
+
+        # Execute the graph using astream to avoid recursion limits
+        print("Streaming graph execution")
+        results: list[dict] = []
+
+        async for st in workflow.astream(initial_state, stream_mode="values"):
+            if len(st.get("results", [])) > len(results):
+                results = st["results"]
+                        
+        print(f"Analysis complete. Processed {len(results)} requirements")
+        return {"status": "success", "results": results}
+
+    except Exception as e:
+        error_type = type(e).__name__
+        error_msg = str(e)
+        print(f"Error in RFP analysis ({error_type}): {error_msg}")
+        return [{"error": f"Analysis failed: {error_msg}"}]
