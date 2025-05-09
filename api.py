@@ -106,6 +106,38 @@ async def analyze_rfp(request: ComplianceRequest) -> Dict:
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.post("/rfp/compliance-matrix")
+async def get_compliance_matrix(request: ComplianceRequest) -> Dict:
+    """
+    Get the compliance matrix for an RFP document.
+    """
+    # Create initial state
+    initial_state = {
+        "pdf_filename": None,
+        "pdf_data": request.pdf_file_content,
+        "current_stage": 0,
+        "previous_output": None,
+        "final_table": None,
+        "stage_outputs": {},
+    }
+
+    # Run the workflow
+    result = run_workflow(initial_state)
+    compliance_matrix = result.get("final_table")
+
+    # Update the database with the compliance matrix
+    await supabase.table("documents").update(
+        {
+            "complianceMatrix": compliance_matrix,
+        }
+    ).eq("id", request.document_id).execute()
+
+    return {
+        "status": "success",
+        "complianceMatrix": compliance_matrix,
+    }
+
+
 @app.post("/rfp/vectorize")
 async def vectorize(request: VectorizeRequest) -> Dict:
     """
@@ -122,6 +154,11 @@ async def check_feasibility(request: FeasibilityRequest) -> Dict:
     Check the feasibility of an RFP document.
     """
     result = await rfp_feasibility_analysis(request.content, request.document_id)
+    await supabase.table("documents").update(
+        {
+            "feasibilityCheck": result.get("results"),
+        }
+    ).eq("id", request.document_id).execute()
     return {"status": "success", "result": result}
 
 
