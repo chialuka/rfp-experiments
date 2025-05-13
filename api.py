@@ -10,7 +10,11 @@ import logging
 import uvicorn
 
 from main import run_workflow
-from modules.feasibility_rag import rfp_feasibility_analysis, create_vector_store
+from modules.feasibility_rag import (
+    rfp_feasibility_analysis,
+    create_vector_store,
+    reset_vector_store,
+)
 from db import supabase
 
 logger = logging.getLogger(__name__)
@@ -126,7 +130,7 @@ async def get_compliance_matrix(request: ComplianceRequest) -> Dict:
     compliance_matrix = result.get("final_table")
 
     # Update the database with the compliance matrix
-    await supabase.table("documents").update(
+    supabase.table("documents").update(
         {
             "complianceMatrix": compliance_matrix,
         }
@@ -154,12 +158,21 @@ async def check_feasibility(request: FeasibilityRequest) -> Dict:
     Check the feasibility of an RFP document.
     """
     result = await rfp_feasibility_analysis(request.content, request.document_id)
-    await supabase.table("documents").update(
+    supabase.table("documents").update(
         {
             "feasibilityCheck": result.get("results"),
         }
     ).eq("id", request.document_id).execute()
-    return {"status": "success", "result": result}
+    return {"status": "success", "result": result.get("results")}
+
+
+@app.get("/rfp/vector/reset")
+async def reset_store() -> Dict:
+    """
+    Reset the vector store.
+    """
+    result = reset_vector_store()
+    return result
 
 
 @app.get("/health")

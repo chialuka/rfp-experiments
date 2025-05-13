@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import subprocess
 from pathlib import Path
 from typing import List, Optional, TypedDict, Dict, Any
 from uuid import uuid4
@@ -19,13 +20,13 @@ from langgraph.graph import StateGraph, START, END
 from pydantic import BaseModel, Field
 import chromadb
 import chromadb.utils.embedding_functions as embedding_functions
-
+from chromadb.config import Settings
 # Local imports
 from prompts.feasibility import EXTRACT_REQUIREMENTS_PROMPT, ASSESS_FEASIBILITY_PROMPT
-from db import supabase
+
 
 # Initialize the ChromaDB client
-chroma_client = chromadb.PersistentClient(path=".vectorstore/chroma")
+chroma_client = chromadb.PersistentClient(path=".vectorstore/chroma", settings=Settings(allow_reset=True))
 
 # Constants
 CHAT_MODEL_NAME = "gpt-4o-mini"
@@ -95,16 +96,31 @@ async def load_documents_from_urls(urls: List[str]) -> List[Document]:
     return docs
 
 
+def reset_vector_store():
+    try:
+        """Reset the vector store by deleting the existing collection and recreating it."""
+        reset_store = chroma_client.reset()
+        print(f"Reset store: {reset_store}")
+        return {"status": "success", "message": "Vector store reset successfully"}
+    except Exception as e:
+        print(f"Error resetting vector store: {e}")
+        return {"status": "error", "message": str(e)}
+
+
 async def create_vector_store(file_urls: List[str]) -> Dict[str, Any]:
     """Create or update a Chroma index with documents."""
     documents = await load_documents_from_urls(file_urls)
     chroma_dir = Path(".vectorstore/chroma")
     chroma_dir.mkdir(parents=True, exist_ok=True)
-
-    # Create a collection if it doesn't exist and return an existing one if it does
-    collection = chroma_client.create_collection(
-        name="z-bids", embedding_function=chroma_embed_fn, get_or_create=True
+    os.chmod(chroma_dir, 0o777)
+    subprocess.run(
+        f"ls -l {str(chroma_dir)}", shell=True, text=True, capture_output=True
     )
+
+    # # Create a collection if it doesn't exist and return an existing one if it does
+    # collection = chroma_client.create_collection(
+    #     name="z-bids", embedding_function=chroma_embed_fn, get_or_create=True
+    # )
 
     # Create a LangChain Chroma wrapper for the collection
     vector_store = Chroma(
@@ -373,9 +389,9 @@ async def rfp_feasibility_analysis(content: str, document_id: int) -> List[dict]
         async for st in workflow.astream(initial_state, stream_mode="values"):
             if len(st.get("results", [])) > len(results):
                 results = st["results"]
-                        
+
         print(f"Analysis complete. Processed {len(results)} requirements")
-        
+
         return {"status": "success", "results": results}
 
     except Exception as e:
