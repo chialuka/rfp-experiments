@@ -266,7 +266,7 @@ async def process_requirement(state: RFPState):
 
         # Retrieve relevant documents
         try:
-            retriever = vector_store.as_retriever(search_type="hybrid", search_kwargs={"k": 8})
+            retriever = vector_store.as_retriever(search_kwargs={"k": 8})
             documents = retriever.invoke(query)
             print(f"Retrieved {len(documents)} documents")
         except Exception as e:
