@@ -8,16 +8,20 @@ from typing import Dict
 from contextlib import asynccontextmanager
 import logging
 import uvicorn
+from rq import Queue
+from worker import conn
 
 from main import run_workflow
 from modules.feasibility_rag import (
     rfp_feasibility_analysis,
     create_vector_store,
     reset_vector_store,
+    sync_rfp_feasibility_analysis,
 )
 from db import supabase
 
 logger = logging.getLogger(__name__)
+q = Queue(connection=conn)
 
 
 @asynccontextmanager
@@ -157,13 +161,8 @@ async def check_feasibility(request: FeasibilityRequest) -> Dict:
     """
     Check the feasibility of an RFP document.
     """
-    result = await rfp_feasibility_analysis(request.content, request.document_id)
-    supabase.table("documents").update(
-        {
-            "feasibilityCheck": result.get("results"),
-        }
-    ).eq("id", request.document_id).execute()
-    return {"status": "success", "result": result.get("results")}
+    q.enqueue(sync_rfp_feasibility_analysis, request.content, request.document_id)
+    return {"status": "processing"}
 
 
 @app.delete("/rfp/vector/reset")
@@ -173,6 +172,22 @@ async def reset_store() -> Dict:
     """
     result = reset_vector_store()
     return result
+
+
+@app.get("/job-status/{job_id}")
+def get_job_status(job_id: str):
+    job = q.fetch_job(job_id)
+    if not job:
+        return {"status": "not_found"}
+
+    status = job.get_status()
+    response = {"status": status}
+
+    if status == "finished":
+        response["result"] = job.result
+        response["complete"] = True
+
+    return response
 
 
 @app.get("/health")
