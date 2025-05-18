@@ -166,7 +166,7 @@ async def check_feasibility(request: FeasibilityRequest) -> Dict:
     return {"status": "success", "result": result.get("results")}
 
 
-@app.get("/rfp/vector/reset")
+@app.delete("/rfp/vector/reset")
 async def reset_store() -> Dict:
     """
     Reset the vector store.
