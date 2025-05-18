@@ -22,13 +22,20 @@ from pydantic import BaseModel, Field
 import chromadb
 import chromadb.utils.embedding_functions as embedding_functions
 from chromadb.config import Settings
+from pinecone import Pinecone, ServerlessSpec
+from langchain_pinecone import PineconeVectorStore
+
 # Local imports
 from prompts.feasibility import EXTRACT_REQUIREMENTS_PROMPT, ASSESS_FEASIBILITY_PROMPT
 from db import supabase
 
-
 # Initialize the ChromaDB client
-chroma_client = chromadb.PersistentClient(path=".vectorstore/chroma", settings=Settings(allow_reset=True))
+chroma_client = chromadb.PersistentClient(
+    path=".vectorstore/chroma", settings=Settings(allow_reset=True)
+)
+
+# Initialize Pinecone client
+pc = Pinecone(api_key=os.environ.get("PINECONE_API_KEY"))
 
 # Constants
 CHAT_MODEL_NAME = "gpt-4o-mini"
@@ -98,37 +105,52 @@ async def load_documents_from_urls(urls: List[str]) -> List[Document]:
     return docs
 
 
-def reset_vector_store():
-    try:
-        """Reset the vector store by deleting the existing collection and recreating it."""
-        reset_store = chroma_client.reset()
-        print(f"Reset store: {reset_store}")
-        return {"status": "success", "message": "Vector store reset successfully"}
-    except Exception as e:
-        print(f"Error resetting vector store: {e}")
-        return {"status": "error", "message": str(e)}
+def reset_vector_store(scope: str = "namespace") -> None:
+    """Reset Pinecone data.
+
+    scope = "namespace" → clear one namespace
+    scope = "index"     → delete and recreate entire index
+    """
+    if scope == "namespace":
+        index = pc.Index("z-bids")
+        index.delete(delete_all=True, namespace="rfp")
+    elif scope == "index":
+        pc.delete_index("z-bids")
+        pc.create_index(
+            name="z-bids",
+            dimension=3072,
+            metric="cosine",
+            spec=ServerlessSpec(
+                cloud="aws", region=os.getenv("PINECONE_ENV", "us-east-1")
+            ),
+        )
+    else:
+        raise ValueError("scope must be 'namespace' or 'index'")
+    return {"status": "success"}
 
 
 async def create_vector_store(file_urls: List[str]) -> Dict[str, Any]:
     """Create or update a Chroma index with documents."""
     documents = await load_documents_from_urls(file_urls)
-    chroma_dir = Path(".vectorstore/chroma")
-    chroma_dir.mkdir(parents=True, exist_ok=True)
-    os.chmod(chroma_dir, 0o777)
-    subprocess.run(
-        f"ls -l {str(chroma_dir)}", shell=True, text=True, capture_output=True
-    )
 
-    # # Create a collection if it doesn't exist and return an existing one if it does
-    # collection = chroma_client.create_collection(
-    #     name="z-bids", embedding_function=chroma_embed_fn, get_or_create=True
-    # )
+    if "z-bids" not in pc.list_indexes().names():
+        pc.create_index(
+            name="z-bids",
+            dimension=3072, # 3072 is the dimension of the embedding model
+            metric="cosine",
+            spec=ServerlessSpec(  # free tier
+                cloud="aws", region=os.getenv("PINECONE_ENV", "us-east-1")
+            ),
+        )
+    host = pc.describe_index("z-bids").host
+    print(f"host:{host}")
+    index = pc.Index(host=host)
 
-    # Create a LangChain Chroma wrapper for the collection
-    vector_store = Chroma(
-        client=chroma_client,
-        collection_name="z-bids",
-        embedding_function=langchain_embeddings,
+    vector_store = PineconeVectorStore(
+        index,  # the low-level Index object
+        embedding=langchain_embeddings,
+        text_key="content",  # which metadata field stores the raw text
+        namespace="rfp",  # optional logical partition
     )
 
     # Add documents using LangChain interface
@@ -139,22 +161,26 @@ async def create_vector_store(file_urls: List[str]) -> Dict[str, Any]:
     return {
         "status": "success",
         "documents_processed": len(documents),
-        "vector_store_location": str(chroma_dir),
         "document_sources": file_urls,
     }
 
 
 def load_vector_store() -> VectorStore:
     """Load the existing Chroma vector store."""
-    chroma_dir = Path(".vectorstore/chroma")
-    if not chroma_dir.exists():
-        raise ValueError("Vector store not found. Please build it first.")
+    if "z-bids" not in pc.list_indexes().names():
+        raise RuntimeError(
+            f"Pinecone index 'z-bids' not found - run create_vector_store first."
+        )
+    host = pc.describe_index("z-bids").host
+    print(f"host:{host}")
+    index = pc.Index(host=host)
 
-    # Create a LangChain Chroma instance that wraps the ChromaDB collection
-    return Chroma(
-        client=chroma_client,
-        collection_name="z-bids",
-        embedding_function=langchain_embeddings,
+    # Create a LangChain Pinecone instance that wraps the Pinecone collection
+    return PineconeVectorStore(
+        index,  # the low-level Index object
+        embedding=langchain_embeddings,
+        text_key="content",  # which metadata field stores the raw text
+        namespace="rfp",  # optional logical partition
     )
 
 
@@ -240,7 +266,7 @@ async def process_requirement(state: RFPState):
 
         # Retrieve relevant documents
         try:
-            retriever = vector_store.as_retriever(search_kwargs={"k": 8})
+            retriever = vector_store.as_retriever(search_type="hybrid", search_kwargs={"k": 8})
             documents = retriever.invoke(query)
             print(f"Retrieved {len(documents)} documents")
         except Exception as e:
