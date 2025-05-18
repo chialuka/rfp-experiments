@@ -8,6 +8,7 @@ import subprocess
 from pathlib import Path
 from typing import List, Optional, TypedDict, Dict, Any
 from uuid import uuid4
+import asyncio
 
 # Third-party imports
 from langchain_core.documents import Document
@@ -23,6 +24,7 @@ import chromadb.utils.embedding_functions as embedding_functions
 from chromadb.config import Settings
 # Local imports
 from prompts.feasibility import EXTRACT_REQUIREMENTS_PROMPT, ASSESS_FEASIBILITY_PROMPT
+from db import supabase
 
 
 # Initialize the ChromaDB client
@@ -392,6 +394,13 @@ async def rfp_feasibility_analysis(content: str, document_id: int) -> List[dict]
 
         print(f"Analysis complete. Processed {len(results)} requirements")
 
+        # Add this at the end of the function
+        supabase.table("documents").update(
+            {
+                "feasibilityCheck": results,
+            }
+        ).eq("id", document_id).execute()
+
         return {"status": "success", "results": results}
 
     except Exception as e:
@@ -399,3 +408,11 @@ async def rfp_feasibility_analysis(content: str, document_id: int) -> List[dict]
         error_msg = str(e)
         print(f"Error in RFP analysis ({error_type}): {error_msg}")
         return [{"error": f"Analysis failed: {error_msg}"}]
+
+
+def sync_rfp_feasibility_analysis(content, document_id):
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    result = loop.run_until_complete(rfp_feasibility_analysis(content, document_id))
+    loop.close()
+    return result

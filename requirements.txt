@@ -163,6 +163,7 @@ python-multipart==0.0.9
 PyYAML==6.0.2
 pyzmq==26.4.0
 realtime==2.4.2
+redis==6.1.0
 reductoai==0.1.0
 referencing==0.36.2
 regex==2024.11.6
@@ -173,6 +174,7 @@ rfc3339-validator==0.1.4
 rfc3986-validator==0.1.1
 rich==14.0.0
 rpds-py==0.24.0
+rq==2.3.3
 rsa==4.9.1
 Send2Trash==1.8.3
 setuptools==80.1.0
