@@ -138,7 +138,7 @@ pinecone==6.0.2
 pinecone-plugin-interface==0.0.7
 platformdirs==4.3.7
 pluggy==1.5.0
-postgrest==1.0.1
+postgrest
 posthog==4.0.1
 prometheus_client==0.21.1
 prompt_toolkit==3.0.50
@@ -168,7 +168,6 @@ python-json-logger==3.3.0
 python-multipart==0.0.9
 PyYAML==6.0.2
 pyzmq==26.4.0
-realtime==2.4.2
 redis==6.1.0
 reductoai==0.1.0
 referencing==0.36.2
@@ -193,7 +192,7 @@ stack-data==0.6.3
 starlette==0.45.3
 storage3==0.11.3
 StrEnum==0.4.15
-supabase==2.15.0
+supabase==2.13.0
 supafunc==0.9.4
 sympy==1.14.0
 syrupy==4.9.1
@@ -219,7 +218,7 @@ wcwidth==0.2.13
 webcolors==24.11.1
 webencodings==0.5.1
 websocket-client==1.8.0
-websockets==14.2
+websockets
 wrapt==1.17.2
 xxhash==3.5.0
 yarl==1.20.0
