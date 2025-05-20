@@ -136,20 +136,30 @@ heroku ps:scale worker=1
 
 ```
 rfp-analysis/
-├── api.py           # FastAPI application and endpoints
-├── main.py          # Core RFP analysis logic
-├── worker.py        # Background worker configuration
-├── db.py            # Database connection
-├── modules/         # Feature modules
-│   └── feasibility_rag.py  # Feasibility analysis with RAG
-├── prompts/         # LLM prompts
-│   ├── compliance_matrix.py
-│   └── feasibility.py
-├── file_storage/    # Place RFP PDFs here
-├── .vectorstore/    # Vector storage directory
-├── requirements.txt # Project dependencies
-├── Procfile         # Heroku process configuration
-└── .env             # API keys (not in git)
+├── api/              # API routes and request handlers 
+│   ├── __init__.py   # API initialization
+│   └── routes.py     # API endpoints definition
+├── executors/        # Workflow execution handlers
+│   ├── run_compliance.py    # Compliance matrix workflow
+│   └── run_feasibility.py   # Feasibility analysis workflow  
+├── graphs/           # LangGraph workflow definitions
+│   ├── compliance.py # Compliance matrix graph nodes
+│   └── feasibility.py # Feasibility analysis graph nodes
+├── models/           # Data models
+│   └── state.py      # State models for workflows
+├── prompts/          # LLM prompts
+│   ├── compliance_matrix.py # Compliance analysis prompts
+│   └── feasibility.py       # Feasibility analysis prompts  
+├── services/         # Service integrations
+│   ├── llm_service.py      # LLM service
+│   └── vector_service.py   # Vector store service
+├── main.py           # Application entry point
+├── worker.py         # Background worker configuration
+├── db.py             # Database connection
+├── file_storage/     # Place RFP PDFs here
+├── requirements.txt  # Project dependencies
+├── Procfile          # Heroku process configuration
+└── .env              # API keys (not in git)
 ```
 
 ## Dependency Management
