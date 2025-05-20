@@ -1,32 +1,48 @@
 # RFP Analysis System
 
-A Python-based system that automatically analyzes Request for Proposal (RFP) documents to extract and structure vendor requirements. The system uses AI to process RFP documents and generate a comprehensive table of requirements, making it easier for vendors to understand their obligations.
+A Python-based system that automatically analyzes Request for Proposal (RFP) documents to extract and structure vendor requirements. The system uses AI to process RFP documents and generate a comprehensive table of requirements, making it easier for vendors to understand their obligations and evaluate feasibility based on past proposals.
 
 ## Features
 
-- Automated RFP document analysis
-- Extraction of explicit and implicit vendor requirements
-- Generation of structured requirements table
-- Identification of critical requirements needing expert review
-- Cross-reference analysis between requirements
-- Debug logging of analysis stages
+- **Automated RFP document analysis**
+- **Compliance matrix generation**: Extraction of explicit and implicit vendor requirements
+- **Feasibility analysis**: Semantic search of past RFPs to assess requirement feasibility
+- **Background job processing**: Asynchronous processing via Redis queues
+- **REST API**: FastAPI endpoints for integration with other systems
+- **Vector search**: Semantic search using Pinecone for requirement comparison
+- **Database integration**: Result storage in Supabase
 
-## Technologies Used
+## Architecture
 
-- **Python 3.x**: Core programming language
-- **LangChain**: Framework for LLM application development
-- **Claude-3-Sonnet**: Large Language Model for text analysis
-- **LangGraph**: For building the analysis workflow
-- **Reducto**: PDF parsing and text extraction
-- **python-dotenv**: Environment variable management
+The system combines several components:
+- **FastAPI** web server for API endpoints
+- **RQ (Redis Queue)** for background job processing
+- **LangChain** for orchestrating LLM workflows
+- **Pinecone** for vector storage and semantic search
+- **Supabase** for structured data storage
+- **Claude and OpenAI** models for text analysis
+
+## API Endpoints
+
+- `POST /rfp/analyze`: Analyze RFP document to generate compliance matrix and feasibility check
+- `POST /rfp/compliance-matrix`: Generate only the compliance matrix
+- `POST /rfp/feasibility`: Check feasibility of requirements against past RFPs
+- `POST /rfp/vectorize`: Index RFP documents for future feasibility comparisons
+- `DELETE /rfp/vector/reset`: Reset the vector store
+- `GET /job-status/{job_id}`: Check status of background jobs
+- `GET /health`: Health check endpoint
 
 ## Prerequisites
 
-- Python 3.8 or higher
-- An Anthropic API key (for Claude)
-- A Reducto API key (for PDF processing)
+- Python 3.11 or higher (3.13 recommended for local development)
+- Redis server (local for development, Redis add-on for Heroku)
+- Anthropic API key (for Claude)
+- OpenAI API key (for embeddings)
+- Reducto API key (for PDF processing)
+- Pinecone API key and index (for vector storage)
+- Supabase project and credentials
 
-## Setup
+## Local Setup
 
 1. Clone the repository:
 ```bash
@@ -53,39 +69,109 @@ touch .env
 5. Add your API keys to the `.env` file:
 ```
 ANTHROPIC_API_KEY=your_anthropic_api_key_here
+OPENAI_API_KEY=your_openai_api_key_here
 REDUCTO_API_KEY=your_reducto_api_key_here
+PINECONE_API_KEY=your_pinecone_api_key_here
+PINECONE_ENV=us-east-1
+SUPABASE_URL=your_supabase_url
+SUPABASE_KEY=your_supabase_key
+REDIS_URL=redis://localhost:6379/0
+PYTHON_ENV=development
+```
+
+6. Start Redis (required for job queueing):
+```bash
+# Using Homebrew on macOS
+brew services start redis
+
+# Or run Redis directly
+redis-server
+```
+
+7. Start the API server:
+```bash
+uvicorn api:app --reload
+```
+
+8. Start the worker process (in a separate terminal):
+```bash
+python worker.py
+```
+
+## Running on Heroku
+
+1. Create a Heroku app:
+```bash
+heroku create your-app-name
+```
+
+2. Add Redis add-on:
+```bash
+heroku addons:create heroku-redis:hobby-dev
+```
+
+3. Configure environment variables:
+```bash
+heroku config:set ANTHROPIC_API_KEY=your_key
+heroku config:set OPENAI_API_KEY=your_key
+heroku config:set REDUCTO_API_KEY=your_key
+heroku config:set PINECONE_API_KEY=your_key
+heroku config:set PINECONE_ENV=us-east-1
+heroku config:set SUPABASE_URL=your_url
+heroku config:set SUPABASE_KEY=your_key
+heroku config:set PYTHON_ENV=production
+```
+
+4. Deploy the application:
+```bash
+git push heroku main
+```
+
+5. Scale worker dyno:
+```bash
+heroku ps:scale worker=1
 ```
 
 ## Project Structure
 
 ```
 rfp-analysis/
-├── file_storage/     # Place RFP PDFs here
-├── main.py          # Main application code
-├── prompts.py       # Analysis stage prompts
+├── api.py           # FastAPI application and endpoints
+├── main.py          # Core RFP analysis logic
+├── worker.py        # Background worker configuration
+├── db.py            # Database connection
+├── modules/         # Feature modules
+│   └── feasibility_rag.py  # Feasibility analysis with RAG
+├── prompts/         # LLM prompts
+│   ├── compliance_matrix.py
+│   └── feasibility.py
+├── file_storage/    # Place RFP PDFs here
+├── .vectorstore/    # Vector storage directory
 ├── requirements.txt # Project dependencies
-└── .env            # API keys (not in git)
+├── Procfile         # Heroku process configuration
+└── .env             # API keys (not in git)
 ```
 
-## Usage
+## Dependency Management
 
-1. Place your RFP document (PDF) in the `file_storage` directory
+If you encounter dependency conflicts, you may need to manage versions carefully:
+- langchain-pinecone 0.2.6 requires aiohttp<3.11
+- supabase 2.15.0+ (through realtime) requires aiohttp>=3.11
 
-2. Run the analysis:
-```bash
-python main.py
-```
+When deploying, you may need to use `--no-deps` or pin specific versions.
 
-3. Check the output files:
-- `RFP_requirements.txt`: Final structured requirements table
-- `debug_stage_outputs.txt`: Detailed analysis logs
-- `rfp_workflow.png`: Visual representation of the analysis workflow
+## Troubleshooting
 
-## Common Issues
+### Local Development
+- **Redis Connection Error**: Ensure Redis is running (`redis-cli ping` should return PONG)
+- **Pinecone Authentication Errors**: Verify your API key is correct and has access to the z-bids index
+- **macOS Fork Safety Error**: Use `export OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES` before starting the worker or switch to SpawnWorker
+- **Vector Dimension Mismatch**: Ensure your embedding model and index dimensions match (1536 or 3072)
 
-1. **API Key Errors**: Make sure both API keys are correctly set in your `.env` file
-2. **PDF Processing Errors**: Ensure your PDF is text-based and not scanned
-3. **Virtual Environment**: Always activate the virtual environment before running
+### Heroku
+- **Worker Not Processing Jobs**: Check `heroku logs --tail --dyno worker` for errors
+- **Dependency Conflicts**: Review `heroku logs --tail` during build to identify package conflicts
+- **Resource Limitations**: Monitor dyno resource usage and upgrade if needed
 
 ## License
 
