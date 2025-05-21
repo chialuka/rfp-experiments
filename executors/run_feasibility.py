@@ -1,14 +1,10 @@
-from typing import Dict, List
+from typing import Dict
 import asyncio
 import os
-from langgraph.checkpoint.memory import MemorySaver
 from graphs.feasibility import build_feasibility_graph
 from services.vector_service import load_vector_store
 from IPython.display import Image
 from db import supabase
-
-# Initialize memory for LangGraph
-memory = MemorySaver()
 
 
 async def run_feasibility_workflow(content: str) -> Dict:
@@ -74,6 +70,23 @@ async def rfp_feasibility_analysis(content: str, document_id: int) -> Dict:
     # Run the analysis
     result = await run_feasibility_workflow(content)
     
+    return result
+
+
+async def run_feasibility_and_save_to_db(content: str, document_id: int) -> Dict:
+    """
+    Run feasibility analysis on RFP content and return results.
+    
+    Args:
+        content: The RFP content or compliance matrix
+        document_id: The document ID in the database
+        
+    Returns:
+        Dict containing the analysis results
+    """
+    # Run the analysis
+    result = await run_feasibility_workflow(content)
+    
     # Update the database
     if document_id:
         supabase.table("documents").update(
@@ -85,7 +98,7 @@ async def rfp_feasibility_analysis(content: str, document_id: int) -> Dict:
 
 def sync_rfp_feasibility_analysis(content: str, document_id: int) -> Dict:
     """
-    Synchronous wrapper for rfp_feasibility_analysis.
+    Synchronous wrapper for run_feasibility_and_save_to_db.
     This is used by the worker thread.
     
     Args:
@@ -97,7 +110,7 @@ def sync_rfp_feasibility_analysis(content: str, document_id: int) -> Dict:
     """
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
-    result = loop.run_until_complete(rfp_feasibility_analysis(content, document_id))
+    result = loop.run_until_complete(run_feasibility_and_save_to_db(content, document_id))
     loop.close()
     return result
 

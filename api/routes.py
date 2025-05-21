@@ -5,8 +5,9 @@ from datetime import datetime
 import logging
 from rq import Queue
 
-from executors.run_compliance import run_compliance_workflow
-from executors.run_feasibility import rfp_feasibility_analysis, sync_rfp_feasibility_analysis
+from executors.run_compliance import run_compliance_and_save_to_db
+from executors.run_feasibility import sync_rfp_feasibility_analysis
+from executors.run_full_analysis import run_full_analysis_sync
 from services.vector_service import create_vector_store, reset_vector_store
 from db import supabase
 
@@ -52,40 +53,8 @@ def create_router(queue: Queue) -> APIRouter:
             Dict containing the analysis results
         """
         print(f"Analyzing document: {request.document_id}")
-
-        try:
-            # Create initial state
-            initial_state = {
-                "pdf_filename": None,
-                "pdf_data": request.pdf_file_content,
-                "current_stage": 0,
-                "previous_output": None,
-                "final_table": None,
-                "stage_outputs": {},
-            }
-
-            # Run the workflow
-            result = run_compliance_workflow(initial_state)
-            compliance_matrix = result.get("final_table")
-
-            feasibility_result = await rfp_feasibility_analysis(
-                compliance_matrix, request.document_id
-            )
-
-            # Update the database with the compliance matrix
-            supabase.table("documents").update(
-                {
-                    "complianceMatrix": compliance_matrix,
-                    "feasibilityCheck": feasibility_result.get("results"),
-                }
-            ).eq("id", request.document_id).execute()
-
-            return {
-                "status": "success",
-            }
-        except Exception as e:
-            logger.error(f"Error analyzing RFP: {str(e)}")
-            raise HTTPException(status_code=500, detail=str(e))
+        queue.enqueue(run_full_analysis_sync, request.pdf_file_content, request.document_id)
+        return {"status": "processing"}
 
 
     @router.post("/compliance-matrix")
@@ -93,31 +62,8 @@ def create_router(queue: Queue) -> APIRouter:
         """
         Get the compliance matrix for an RFP document.
         """
-        # Create initial state
-        initial_state = {
-            "pdf_filename": None,
-            "pdf_data": request.pdf_file_content,
-            "current_stage": 0,
-            "previous_output": None,
-            "final_table": None,
-            "stage_outputs": {},
-        }
-
-        # Run the workflow
-        result = run_compliance_workflow(initial_state)
-        compliance_matrix = result.get("final_table")
-
-        # Update the database with the compliance matrix
-        supabase.table("documents").update(
-            {
-                "complianceMatrix": compliance_matrix,
-            }
-        ).eq("id", request.document_id).execute()
-
-        return {
-            "status": "success",
-            "complianceMatrix": compliance_matrix,
-        }
+        queue.enqueue(run_compliance_and_save_to_db, request.pdf_file_content, request.document_id)
+        return {"status": "processing"}
 
 
     @router.post("/vectorize")
